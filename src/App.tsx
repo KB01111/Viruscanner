@@ -1,7 +1,5 @@
 import type { CSSProperties, ReactNode } from "react"
 import { useEffect, useMemo, useState } from "react"
-import { Channel, invoke } from "@tauri-apps/api/core"
-import { open } from "@tauri-apps/plugin-dialog"
 import {
   AlertTriangleIcon,
   ArchiveIcon,
@@ -61,6 +59,13 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  Channel,
+  desktopIpcUnavailableMessage,
+  invokeCommand,
+  isDesktopIpcAvailable,
+  openDesktopDialog,
+} from "@/lib/desktop-ipc"
 
 const defaultOptions: ScanOptions = {
   includeArchives: true,
@@ -76,6 +81,31 @@ const emptySummary: ScanSummary = {
   skipped: 0,
   errors: 0,
   canceled: false,
+}
+
+const unavailableCloudStatus: CloudStatus = {
+  enabled: false,
+  provider: "virustotal",
+  reason: desktopIpcUnavailableMessage(),
+}
+
+const unavailableEngineStatus: EngineStatus = {
+  builtInYaraSources: 0,
+  externalYaraSources: 0,
+  hashIndicators: 0,
+  magikaAvailable: false,
+  magikaError: desktopIpcUnavailableMessage(),
+  signatureSources: [],
+  loadErrors: [desktopIpcUnavailableMessage()],
+}
+
+const unavailableCompromiseSuite: CompromiseCheckSuite = {
+  reportOnly: true,
+  groups: [],
+  targets: [],
+  nextActions: [
+    "Open the Tauri desktop shell to load local compromise-check targets.",
+  ],
 }
 
 const sectionTitles: Record<AppSection, string> = {
@@ -123,7 +153,12 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
+function messageFromError(err: unknown) {
+  return err instanceof Error ? err.message : String(err)
+}
+
 export default function App() {
+  const desktopIpcAvailable = isDesktopIpcAvailable()
   const [activeSection, setActiveSection] = useState<AppSection>("scan")
   const [targets, setTargets] = useState<string[]>([])
   const [targetInput, setTargetInput] = useState("")
@@ -145,16 +180,23 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    invoke<CloudStatus>("get_cloud_status")
+    if (!desktopIpcAvailable) {
+      setCloudStatus(unavailableCloudStatus)
+      setEngineStatus(unavailableEngineStatus)
+      setSuite(unavailableCompromiseSuite)
+      return
+    }
+
+    invokeCommand<CloudStatus>("get_cloud_status")
       .then(setCloudStatus)
       .catch((err) =>
         setCloudStatus({
           enabled: false,
           provider: "virustotal",
-          reason: String(err),
+          reason: messageFromError(err),
         })
       )
-    invoke<EngineStatus>("get_engine_status")
+    invokeCommand<EngineStatus>("get_engine_status")
       .then(setEngineStatus)
       .catch((err) =>
         setEngineStatus({
@@ -162,12 +204,12 @@ export default function App() {
           externalYaraSources: 0,
           hashIndicators: 0,
           magikaAvailable: false,
-          magikaError: String(err),
+          magikaError: messageFromError(err),
           signatureSources: [],
-          loadErrors: [String(err)],
+          loadErrors: [messageFromError(err)],
         })
       )
-    invoke<CompromiseCheckSuite>("get_compromise_check_suite")
+    invokeCommand<CompromiseCheckSuite>("get_compromise_check_suite")
       .then((response) => {
         setSuite(response)
         setSelectedSuiteTargetIds(
@@ -179,9 +221,9 @@ export default function App() {
         )
       })
       .catch((err) => {
-        setError(String(err))
+        setError(messageFromError(err))
       })
-  }, [])
+  }, [desktopIpcAvailable])
 
   const selectedResult = useMemo(
     () => results.find((result) => result.path === selectedPath) ?? results[0],
@@ -211,26 +253,38 @@ export default function App() {
   }
 
   const pickFiles = async () => {
-    const result = await open({
-      multiple: true,
-      directory: false,
-      title: "Select files",
-    })
-    setTargets((current) => uniqueTargets(current, normalizeDialogResult(result)))
+    try {
+      const result = await openDesktopDialog({
+        multiple: true,
+        directory: false,
+        title: "Select files",
+      })
+      setTargets((current) => uniqueTargets(current, normalizeDialogResult(result)))
+    } catch (err) {
+      setError(messageFromError(err))
+    }
   }
 
   const pickFolders = async () => {
-    const result = await open({
-      multiple: true,
-      directory: true,
-      title: "Select folders",
-    })
-    setTargets((current) => uniqueTargets(current, normalizeDialogResult(result)))
+    try {
+      const result = await openDesktopDialog({
+        multiple: true,
+        directory: true,
+        title: "Select folders",
+      })
+      setTargets((current) => uniqueTargets(current, normalizeDialogResult(result)))
+    } catch (err) {
+      setError(messageFromError(err))
+    }
   }
 
   const startScan = async (pathsOverride?: string[]) => {
     const scanTargets = pathsOverride ?? targets
     if (scanTargets.length === 0 || isScanning) return
+    if (!desktopIpcAvailable) {
+      setError(desktopIpcUnavailableMessage())
+      return
+    }
 
     setTargets(scanTargets)
     setError(null)
@@ -292,14 +346,14 @@ export default function App() {
     }
 
     try {
-      const response = await invoke<StartScanResponse>("start_scan", {
+      const response = await invokeCommand<StartScanResponse>("start_scan", {
         paths: scanTargets,
         options,
         onEvent,
       })
       setScanId(response.scanId)
     } catch (err) {
-      setError(String(err))
+      setError(messageFromError(err))
       setIsScanning(false)
       setScanId(null)
     }
@@ -307,8 +361,12 @@ export default function App() {
 
   const cancelScan = async () => {
     if (!scanId) return
-    await invoke("cancel_scan", { scanId })
-    setEvents((current) => ["Cancel requested", ...current])
+    try {
+      await invokeCommand("cancel_scan", { scanId })
+      setEvents((current) => ["Cancel requested", ...current])
+    } catch (err) {
+      setError(messageFromError(err))
+    }
   }
 
   const runCompromiseSuite = async () => {
@@ -373,6 +431,7 @@ export default function App() {
                 events={events}
                 options={options}
                 suspiciousResultCount={suspiciousResultCount}
+                desktopIpcAvailable={desktopIpcAvailable}
               />
             ) : null}
             {activeSection === "compromise" ? (
@@ -428,6 +487,7 @@ function ScanWorkspace({
   events,
   options,
   suspiciousResultCount,
+  desktopIpcAvailable,
 }: {
   cloudStatus: CloudStatus | null
   engineStatus: EngineStatus | null
@@ -453,10 +513,11 @@ function ScanWorkspace({
   events: string[]
   options: ScanOptions
   suspiciousResultCount: number
+  desktopIpcAvailable: boolean
 }) {
   return (
     <>
-      <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(520px,1.18fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)]">
         <Card>
           <CardHeader>
             <CardTitle>Targets</CardTitle>
@@ -479,12 +540,26 @@ function ScanWorkspace({
             </CardAction>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
+            {!desktopIpcAvailable ? (
+              <div className="rounded-lg border border-dashed bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+                {desktopIpcUnavailableMessage()}
+              </div>
+            ) : null}
+
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={pickFiles}>
+              <Button
+                variant="outline"
+                disabled={!desktopIpcAvailable || isScanning}
+                onClick={pickFiles}
+              >
                 <FilePlusIcon />
                 Files
               </Button>
-              <Button variant="outline" onClick={pickFolders}>
+              <Button
+                variant="outline"
+                disabled={!desktopIpcAvailable || isScanning}
+                onClick={pickFolders}
+              >
                 <FolderOpenIcon />
                 Folders
               </Button>
@@ -507,7 +582,11 @@ function ScanWorkspace({
                 }}
                 placeholder="C:\Users\kevin\Downloads"
               />
-              <Button variant="secondary" onClick={addManualTarget}>
+              <Button
+                variant="secondary"
+                disabled={!targetInput.trim() || isScanning}
+                onClick={addManualTarget}
+              >
                 <SearchIcon />
                 Add
               </Button>
@@ -546,7 +625,12 @@ function ScanWorkspace({
             />
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button disabled={targets.length === 0 || isScanning} onClick={startScan}>
+              <Button
+                disabled={
+                  !desktopIpcAvailable || targets.length === 0 || isScanning
+                }
+                onClick={startScan}
+              >
                 <PlayIcon />
                 Scan
               </Button>
@@ -560,7 +644,7 @@ function ScanWorkspace({
         </Card>
 
         <div className="grid gap-4">
-          <div className="grid gap-4 sm:grid-cols-5">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-4">
             <MetricCard icon={<SearchIcon />} label="Seen" value={summary.filesSeen} />
             <MetricCard
               icon={<ShieldCheckIcon />}
@@ -587,11 +671,12 @@ function ScanWorkspace({
             summary={summary}
             cloudStatus={cloudStatus}
             engineStatus={engineStatus}
+            desktopIpcAvailable={desktopIpcAvailable}
           />
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(560px,1fr)_minmax(340px,0.55fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.55fr)]">
         <ResultsTable
           results={results}
           selectedPath={selectedPath}
@@ -633,7 +718,7 @@ function CompromiseWorkspace({
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(580px,1fr)_360px]">
       <div className="grid gap-4">
-        <div className="grid gap-4 sm:grid-cols-4">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-4">
           <MetricCard
             icon={<FolderSearchIcon />}
             label="Targets"
@@ -1018,6 +1103,7 @@ function ProgressCard({
   summary,
   cloudStatus,
   engineStatus,
+  desktopIpcAvailable,
 }: {
   isScanning: boolean
   scanId: string | null
@@ -1025,6 +1111,7 @@ function ProgressCard({
   summary: ScanSummary
   cloudStatus: CloudStatus | null
   engineStatus: EngineStatus | null
+  desktopIpcAvailable: boolean
 }) {
   return (
     <Card>
@@ -1063,12 +1150,17 @@ function ProgressCard({
             {summary.errors} errors
           </div>
         </div>
-        {cloudStatus?.reason ? (
+        {!desktopIpcAvailable ? (
+          <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+            {desktopIpcUnavailableMessage()}
+          </div>
+        ) : null}
+        {desktopIpcAvailable && cloudStatus?.reason ? (
           <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
             {cloudStatus.reason}
           </div>
         ) : null}
-        {engineStatus ? (
+        {desktopIpcAvailable && engineStatus ? (
           <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
             {engineStatus.externalYaraSources} external YARA sources,{" "}
             {engineStatus.hashIndicators} hash indicators, Magika{" "}
@@ -1102,7 +1194,7 @@ function ResultsTable({
         <CardDescription>{results.length} rows</CardDescription>
       </CardHeader>
       <CardContent>
-        <Table>
+        <Table className="min-w-[760px]">
           <TableHeader>
             <TableRow>
               <TableHead>Verdict</TableHead>
@@ -1368,12 +1460,12 @@ function MetricCard({
 }) {
   return (
     <Card size="sm">
-      <CardContent className="flex items-center justify-between gap-3">
-        <div className="grid gap-1">
-          <div className="text-sm text-muted-foreground">{label}</div>
-          <div className="text-2xl font-semibold">{value}</div>
+      <CardContent className="flex min-h-20 items-center justify-between gap-3">
+        <div className="grid min-w-0 gap-1">
+          <div className="truncate text-sm text-muted-foreground">{label}</div>
+          <div className="text-2xl leading-none font-semibold">{value}</div>
         </div>
-        <div className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
           {icon}
         </div>
       </CardContent>
