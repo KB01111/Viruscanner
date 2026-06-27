@@ -1,0 +1,4 @@
+[env]
+YRX_REGENERATE_MODULES_RS = "false"
+TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
+TS_RS_LARGE_INT = "number"
