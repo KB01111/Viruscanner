@@ -163,9 +163,15 @@ export default function App() {
   const [targets, setTargets] = useState<string[]>([])
   const [targetInput, setTargetInput] = useState("")
   const [options, setOptions] = useState<ScanOptions>(defaultOptions)
-  const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null)
-  const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null)
-  const [suite, setSuite] = useState<CompromiseCheckSuite | null>(null)
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(
+    desktopIpcAvailable ? null : unavailableCloudStatus
+  )
+  const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(
+    desktopIpcAvailable ? null : unavailableEngineStatus
+  )
+  const [suite, setSuite] = useState<CompromiseCheckSuite | null>(
+    desktopIpcAvailable ? null : unavailableCompromiseSuite
+  )
   const [selectedSuiteTargetIds, setSelectedSuiteTargetIds] = useState<Set<string>>(
     () => new Set()
   )
@@ -246,8 +252,8 @@ export default function App() {
   )
 
   const addManualTarget = () => {
+    if (isScanning || !targetInput.trim()) return
     const trimmed = targetInput.trim()
-    if (!trimmed) return
     setTargets((current) => uniqueTargets(current, [trimmed]))
     setTargetInput("")
   }
