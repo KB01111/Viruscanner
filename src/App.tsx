@@ -252,7 +252,7 @@ export default function App() {
   )
 
   const addManualTarget = () => {
-    if (isScanning || !targetInput.trim()) return
+    if (!desktopIpcAvailable || isScanning || !targetInput.trim()) return
     const trimmed = targetInput.trim()
     setTargets((current) => uniqueTargets(current, [trimmed]))
     setTargetInput("")
