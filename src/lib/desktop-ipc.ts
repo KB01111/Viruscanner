@@ -16,9 +16,14 @@ export function isDesktopIpcAvailable() {
     typeof globalThis & {
       __TAURI__?: unknown
       __TAURI_INTERNALS__?: unknown
+      __TAURI_IPC__?: unknown
     }
 
-  return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__)
+  return Boolean(
+    tauriWindow.__TAURI__ ||
+      tauriWindow.__TAURI_INTERNALS__ ||
+      tauriWindow.__TAURI_IPC__
+  )
 }
 
 export function desktopIpcUnavailableMessage() {
