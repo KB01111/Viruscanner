@@ -584,7 +584,7 @@ function ScanWorkspace({
               />
               <Button
                 variant="secondary"
-                disabled={!targetInput.trim() || isScanning}
+                disabled={!desktopIpcAvailable || !targetInput.trim() || isScanning}
                 onClick={addManualTarget}
               >
                 <SearchIcon />
